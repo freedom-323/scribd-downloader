@@ -49,7 +49,7 @@ jobs:
             const releaseTitle = "Release " + stamp;
             const outFile = (releaseTitle + ".html").replace(/[/:]/g, "-");
 
-            // 3. Export variables to GitHub Actions environment
+            // 3. Export variables safely to GitHub Actions environment
             fs.appendFileSync(process.env.GITHUB_ENV,
               `EMBED_URL=${embedUrl}\nRELEASE_TITLE=${releaseTitle}\nOUT_FILE=${outFile}\n`
             );
@@ -73,5 +73,6 @@ jobs:
         run: |
           gh release create "release-${{ github.run_id }}" \
             "$OUT_FILE" \
+            -R "${{ github.repository }}" \
             --title "${RELEASE_TITLE}" \
             --notes "Archived from: ${RAW_URL}"

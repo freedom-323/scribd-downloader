@@ -6,10 +6,10 @@ on:
       scribd_url:
         description: 'Scribd Document URL'
         required: true
-      utc_offset:
-        description: 'Timezone offset in hours: +/-n(.5) (e.g., +8, -5, +5.5, 0)'
-        required: true
-        default: '+8'
+      custom_title:
+        description: 'Custom release title (optional, overrides HTML <title>)'
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -19,15 +19,14 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Parse URL and Calculate Timestamp
+      - name: Parse URL and Set Date Fallback
         env:
           RAW_URL: ${{ github.event.inputs.scribd_url }}
-          UTC_OFFSET: ${{ github.event.inputs.utc_offset }}
+          CUSTOM_TITLE: ${{ github.event.inputs.custom_title }}
         run: |
           node -e '
             const fs = require("fs");
 
-            // 1. Extract numeric ID after /document/ and build embed URL
             const urlMatch = (process.env.RAW_URL || "").match(/scribd\.com\/document\/(\d+)/);
             const docId = urlMatch ? urlMatch.at(1) : null;
             if (!docId) {
@@ -36,29 +35,21 @@ jobs:
             }
             const embedUrl = ["https://scribd.com", "embeds", docId, "content"].join("/");
 
-            // 2. Parse +/-n(.5) offset and format timestamp
-            const rawOffset = (process.env.UTC_OFFSET || "0").replace(/^(GMT|UTC)/i, "").trim();
-            if (!/^[+-]?\d+(\.5)?$/.test(rawOffset)) {
-              console.error("Error: Invalid offset format. Use +/-n or +/-n.5");
-              process.exit(1);
-            }
-            const d = new Date(Date.now() + parseFloat(rawOffset) * 3600000);
+            const d = new Date();
             const p = n => String(n).padStart(2, "0");
-            const stamp = `${p(d.getUTCDate())}/${p(d.getUTCMonth()+1)}/${d.getUTCFullYear()} (${p(d.getUTCHours())}:${p(d.getUTCMinutes())})`;
+            const dateStr = `${d.getUTCFullYear()}-${p(d.getUTCMonth()+1)}-${p(d.getUTCDate())}`;
 
-            const releaseTitle = "Release " + stamp;
-            const outFile = (releaseTitle + ".html").replace(/[/:]/g, "-");
+            const customTitle = (process.env.CUSTOM_TITLE || "").replace(/\s+/g, " ").trim();
+            const outFile = (dateStr + ".html");
 
-            // 3. Export variables safely to GitHub Actions environment
             fs.appendFileSync(process.env.GITHUB_ENV,
-              `EMBED_URL=${embedUrl}\nRELEASE_TITLE=${releaseTitle}\nOUT_FILE=${outFile}\n`
+              `EMBED_URL=${embedUrl}\nCUSTOM_TITLE=${customTitle}\nFALLBACK_TITLE=${dateStr}\nOUT_FILE=${outFile}\n`
             );
           '
 
       - name: Download Single-File HTML
         run: |
           echo "Fetching: $EMBED_URL"
-          echo "Release Title: $RELEASE_TITLE"
           echo "Output File: $OUT_FILE"
 
           npx --yes single-file-cli "$EMBED_URL" "$OUT_FILE" \
@@ -66,13 +57,62 @@ jobs:
             --browser-args='["--no-sandbox"]' \
             --load-deferred-images=true
 
+      - name: Resolve Title
+        run: |
+          node -e '
+            const fs = require("fs");
+
+            const clean = s => (s || "")
+              .replace(/&amp;/g, "&")
+              .replace(/&lt;/g, "<")
+              .replace(/&gt;/g, ">")
+              .replace(/&quot;/g, "\"")
+              .replace(/&#0*39;/g, "\u0027")
+              .replace(/&apos;/g, "\u0027")
+              .replace(/&nbsp;/g, " ")
+              .replace(/\s+/g, " ")
+              .trim();
+
+            let title = "";
+
+            title = clean(process.env.CUSTOM_TITLE);
+
+            if (!title) {
+              const html = fs.readFileSync(process.env.OUT_FILE, "utf8");
+              const m = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+              title = m ? clean(m[1]) : "";
+            }
+
+            if (!title) title = process.env.FALLBACK_TITLE;
+
+            if (title.length > 120) title = title.slice(0, 120).trim();
+            title = title.replace(/\.html?$/i, "").trim();
+            if (!title) title = process.env.FALLBACK_TITLE;
+
+            const assetName = title
+              .replace(/[\/\\:*?"<>|\x00-\x1f]/g, "-")
+              .replace(/\s+/g, " ")
+              .trim() + ".html";
+
+            fs.appendFileSync(process.env.GITHUB_ENV,
+              `DOC_TITLE=${title}\nASSET_FILE=${assetName}\n`
+            );
+          '
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RAW_URL: ${{ github.event.inputs.scribd_url }}
         run: |
+          echo "Title: $DOC_TITLE"
+          echo "Asset: $ASSET_FILE"
+
+          if [ "$OUT_FILE" != "$ASSET_FILE" ]; then
+            mv "$OUT_FILE" "$ASSET_FILE"
+          fi
+
           gh release create "release-${{ github.run_id }}" \
-            "$OUT_FILE" \
+            "$ASSET_FILE" \
             -R "${{ github.repository }}" \
-            --title "${RELEASE_TITLE}" \
+            --title "$DOC_TITLE" \
             --notes "Archived from: ${RAW_URL}"

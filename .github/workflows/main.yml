@@ -62,28 +62,59 @@ jobs:
           node -e '
             const fs = require("fs");
 
-            const clean = s => (s || "")
+            const html = fs.readFileSync(process.env.OUT_FILE, "utf8");
+
+            const decodeEntities = s => s
+              .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+              .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(parseInt(d, 10)))
               .replace(/&amp;/g, "&")
               .replace(/&lt;/g, "<")
               .replace(/&gt;/g, ">")
               .replace(/&quot;/g, "\"")
-              .replace(/&#0*39;/g, "\u0027")
               .replace(/&apos;/g, "\u0027")
-              .replace(/&nbsp;/g, " ")
+              .replace(/&nbsp;/g, " ");
+
+            const clean = s => decodeEntities(s || "")
+              .replace(/[\u200B-\u200D\uFEFF]/g, "")
               .replace(/\s+/g, " ")
               .trim();
 
-            let title = "";
+            const stripSuffix = t => t.replace(/\s*[-|–—]\s*Scribd\s*$/i, "").trim();
 
-            title = clean(process.env.CUSTOM_TITLE);
-
-            if (!title) {
-              const html = fs.readFileSync(process.env.OUT_FILE, "utf8");
+            const fromTitleTag = () => {
               const m = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-              title = m ? clean(m[1]) : "";
-            }
+              return m ? stripSuffix(clean(m[1])) : "";
+            };
 
-            if (!title) title = process.env.FALLBACK_TITLE;
+            const fromOgTitle = () => {
+              const m = html.match(/<meta[^>]+property=["\x27]og:title["\x27][^>]+content=["\x27]([^"\x27]*)["\x27]/i)
+                || html.match(/<meta[^>]+content=["\x27]([^"\x27]*)["\x27][^>]+property=["\x27]og:title["\x27]/i);
+              return m ? stripSuffix(clean(m[1])) : "";
+            };
+
+            const fromJsonTitle = () => {
+              const m = html.match(/"title"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+              if (!m) return "";
+              try { return stripSuffix(clean(JSON.parse("\"" + m[1] + "\""))); } catch (_) { return ""; }
+            };
+
+            const fromH1 = () => {
+              const m = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
+              if (!m) return "";
+              const text = m[1].replace(/<[^>]+>/g, " ");
+              return stripSuffix(clean(text));
+            };
+
+            const candidates = [
+              clean(process.env.CUSTOM_TITLE),
+              fromOgTitle(),
+              fromJsonTitle(),
+              fromH1(),
+              fromTitleTag(),
+              process.env.FALLBACK_TITLE,
+            ];
+
+            let title = candidates.find(t => t && !/^scribd$/i.test(t)) || process.env.FALLBACK_TITLE;
 
             if (title.length > 120) title = title.slice(0, 120).trim();
             title = title.replace(/\.html?$/i, "").trim();

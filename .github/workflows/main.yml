@@ -27,13 +27,14 @@ jobs:
           node -e '
             const fs = require("fs");
 
-            // 1. Extract numeric ID after /document/
+            // 1. Extract numeric ID after /document/ and build embed URL
             const urlMatch = (process.env.RAW_URL || "").match(/scribd\.com\/document\/(\d+)/);
-            if (!urlMatch) {
+            const docId = urlMatch ? urlMatch.at(1) : null;
+            if (!docId) {
               console.error("Error: Invalid Scribd URL");
               process.exit(1);
             }
-            const embedUrl = "https://scribd.com" + urlMatch[1] + "/content";
+            const embedUrl = ["https://scribd.com", "embeds", docId, "content"].join("/");
 
             // 2. Parse +/-n(.5) offset and format timestamp
             const rawOffset = (process.env.UTC_OFFSET || "0").replace(/^(GMT|UTC)/i, "").trim();
@@ -48,7 +49,7 @@ jobs:
             const releaseTitle = "Release " + stamp;
             const outFile = (releaseTitle + ".html").replace(/[/:]/g, "-");
 
-            // 3. Export variables safely to GitHub Actions environment
+            // 3. Export variables to GitHub Actions environment
             fs.appendFileSync(process.env.GITHUB_ENV,
               `EMBED_URL=${embedUrl}\nRELEASE_TITLE=${releaseTitle}\nOUT_FILE=${outFile}\n`
             );

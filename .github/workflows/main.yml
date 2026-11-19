@@ -19,46 +19,51 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Calculate Timestamp and Save Single-File HTML
+      - name: Parse URL and Calculate Timestamp
         env:
           RAW_URL: ${{ github.event.inputs.scribd_url }}
           UTC_OFFSET: ${{ github.event.inputs.utc_offset }}
         run: |
-          # 1. Extract numeric ID after /document/
-          DOC_ID=$(echo "$RAW_URL" | sed -nE 's|^https?://(www\.)?scribd\.com/document/([0-9]+).*|\2|p')
-          if [ -z "$DOC_ID" ]; then
-            echo "Error: Invalid Scribd URL"
-            exit 1
-          fi
+          node -e '
+            const fs = require("fs");
 
-          # 2. Parse +/-n(.5) offset in Node.js and format timestamp
-          STAMP=$(node -e '
-            const raw = (process.env.UTC_OFFSET || "0").replace(/^(GMT|UTC)/i, "").trim();
-            if (!/^[+-]?\d+(\.5)?$/.test(raw)) {
-              console.error("Invalid offset format. Use +/-n or +/-n.5 (e.g., +8, -5, +5.5)");
+            // 1. Extract numeric ID after /document/
+            const urlMatch = (process.env.RAW_URL || "").match(/scribd\.com\/document\/(\d+)/);
+            if (!urlMatch) {
+              console.error("Error: Invalid Scribd URL");
               process.exit(1);
             }
-            const hours = parseFloat(raw);
-            const d = new Date(Date.now() + hours * 3600000);
+            const embedUrl = "https://scribd.com" + urlMatch[1] + "/content";
+
+            // 2. Parse +/-n(.5) offset and format timestamp
+            const rawOffset = (process.env.UTC_OFFSET || "0").replace(/^(GMT|UTC)/i, "").trim();
+            if (!/^[+-]?\d+(\.5)?$/.test(rawOffset)) {
+              console.error("Error: Invalid offset format. Use +/-n or +/-n.5");
+              process.exit(1);
+            }
+            const d = new Date(Date.now() + parseFloat(rawOffset) * 3600000);
             const p = n => String(n).padStart(2, "0");
-            console.log(`${p(d.getUTCDate())}/${p(d.getUTCMonth()+1)}/${d.getUTCFullYear()} (${p(d.getUTCHours())}:${p(d.getUTCMinutes())})`);
-          ')
+            const stamp = `${p(d.getUTCDate())}/${p(d.getUTCMonth()+1)}/${d.getUTCFullYear()} (${p(d.getUTCHours())}:${p(d.getUTCMinutes())})`;
 
-          RELEASE_TITLE="Release ${STAMP}"
-          OUT_FILE=$(echo "${RELEASE_TITLE}.html" | tr '/:' '-')
+            const releaseTitle = "Release " + stamp;
+            const outFile = (releaseTitle + ".html").replace(/[/:]/g, "-");
 
-          echo "Fetching: https://scribd.com{DOC_ID}/content"
-          echo "Release Title: ${RELEASE_TITLE}"
-          echo "Output File: ${OUT_FILE}"
+            // 3. Export variables safely to GitHub Actions environment
+            fs.appendFileSync(process.env.GITHUB_ENV,
+              `EMBED_URL=${embedUrl}\nRELEASE_TITLE=${releaseTitle}\nOUT_FILE=${outFile}\n`
+            );
+          '
 
-          # 3. Save single-file HTML
-          npx single-file-cli "https://scribd.com{DOC_ID}/content" "$OUT_FILE" \
+      - name: Download Single-File HTML
+        run: |
+          echo "Fetching: $EMBED_URL"
+          echo "Release Title: $RELEASE_TITLE"
+          echo "Output File: $OUT_FILE"
+
+          npx --yes single-file-cli "$EMBED_URL" "$OUT_FILE" \
             --browser-executable-path=/usr/bin/google-chrome \
             --browser-args='["--no-sandbox"]' \
             --load-deferred-images=true
-
-          echo "RELEASE_TITLE=$RELEASE_TITLE" >> "$GITHUB_ENV"
-          echo "OUT_FILE=$OUT_FILE" >> "$GITHUB_ENV"
 
       - name: Create GitHub Release
         env:

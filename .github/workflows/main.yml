@@ -1,0 +1,70 @@
+name: Scribd Downloader
+
+on:
+  workflow_dispatch:
+    inputs:
+      scribd_url:
+        description: 'Scribd Document URL'
+        required: true
+      release_title:
+        description: 'Release title'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Parse URL and Build Output Name
+        env:
+          RAW_URL: ${{ github.event.inputs.scribd_url }}
+          CUSTOM_TITLE: ${{ github.event.inputs.release_title }}
+        run: |
+          node -e '
+            const fs = require("fs");
+
+            const urlMatch = (process.env.RAW_URL || "").match(/scribd\.com\/document\/(\d+)/);
+            const docId = urlMatch ? urlMatch.at(1) : null;
+            if (!docId) {
+              console.error("Error: Invalid Scribd URL");
+              process.exit(1);
+            }
+            const embedUrl = ["https://scribd.com", "embeds", docId, "content"].join("/");
+
+            const releaseTitle = (process.env.CUSTOM_TITLE || "").trim();
+            if (!releaseTitle) {
+              console.error("Error: Release title is required");
+              process.exit(1);
+            }
+
+            const outFile = (releaseTitle + ".html").replace(/[\/\\:*?"<>|]/g, "-");
+
+            fs.appendFileSync(process.env.GITHUB_ENV,
+              `EMBED_URL=${embedUrl}\nRELEASE_TITLE=${releaseTitle}\nOUT_FILE=${outFile}\n`
+            );
+          '
+
+      - name: Download Single-File HTML
+        run: |
+          echo "Fetching: $EMBED_URL"
+          echo "Release Title: $RELEASE_TITLE"
+          echo "Output File: $OUT_FILE"
+
+          npx --yes single-file-cli "$EMBED_URL" "$OUT_FILE" \
+            --browser-executable-path=/usr/bin/google-chrome \
+            --browser-args='["--no-sandbox"]' \
+            --load-deferred-images=true
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RAW_URL: ${{ github.event.inputs.scribd_url }}
+        run: |
+          gh release create "release-${{ github.run_id }}" \
+            "$OUT_FILE" \
+            -R "${{ github.repository }}" \
+            --title "${RELEASE_TITLE}" \
+            --notes "Archived from: ${RAW_URL}"
